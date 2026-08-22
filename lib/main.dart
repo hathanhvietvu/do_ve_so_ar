@@ -1,14 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
-import 'package:http/http' as http;
+import 'package:http/http.dart' as http;
 import 'package:html/parser.dart' as parser;
 
 late List<CameraDescription> _cameras;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  _cameras = await availableCameras();
+  try {
+    _cameras = await availableCameras();
+  } catch (e) {
+    _cameras = [];
+  }
   runApp(const MyApp());
 }
 
@@ -19,6 +23,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'AR Dò Vé Số XSMN',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
         primarySwatch: Colors.deepOrange,
         useMaterial3: true,
@@ -42,7 +47,6 @@ class _ScannerScreenState extends State<ScannerScreen> {
   
   List<TextBlock> _detectedBlocks = [];
   List<String> _winningNumbers = [];
-  bool _isLoadingResults = true;
   String _statusText = "Đang tải KQXS từ MinhChinh.com...";
 
   @override
@@ -52,7 +56,6 @@ class _ScannerScreenState extends State<ScannerScreen> {
     _initCamera();
   }
 
-  // 1. Cào dữ liệu từ Minh Chinh
   Future<void> _fetchMinhChinhXSMN() async {
     try {
       final url = Uri.parse('https://www.minhchinh.com/truc-tiep-xo-so-mien-nam.html');
@@ -62,34 +65,30 @@ class _ScannerScreenState extends State<ScannerScreen> {
         var document = parser.parse(response.body);
         List<String> numbers = [];
 
-        // Tìm tất cả các thẻ chứa dãy số trúng thưởng trên trang web
         var elements = document.querySelectorAll('.box_kqxs td, .bkqmien .number');
         for (var el in elements) {
           String text = el.text.trim();
-          // Lọc lấy các chuỗi chỉ chứa số (từ 2 đến 6 chữ số)
           if (RegExp(r'^\d{2,6}$').hasMatch(text)) {
             numbers.add(text);
           }
         }
 
         setState(() {
-          _winningNumbers = numbers.toSet().toList(); // Loại bỏ số trùng
-          _isLoadingResults = false;
-          _statusText = "Đã tải ${_winningNumbers.length} số trúng. Hãy đưa vé số vào khung hình!";
+          _winningNumbers = numbers.toSet().toList();
+          _statusText = "Đã tải ${_winningNumbers.length} số trúng. Quét vé số ngay!";
         });
       } else {
         setState(() {
-          _statusText = "Lỗi kết nối tới MinhChinh.com (${response.statusCode})";
+          _statusText = "Lỗi tải KQXS (${response.statusCode})";
         });
       }
     } catch (e) {
       setState(() {
-        _statusText = "Không thể tải KQXS. Vui lòng kiểm tra mạng.";
+        _statusText = "Không thể kết nối internet.";
       });
     }
   }
 
-  // 2. Khởi tạo Camera & luồng xử lý AR
   Future<void> _initCamera() async {
     if (_cameras.isEmpty) return;
 
@@ -111,7 +110,6 @@ class _ScannerScreenState extends State<ScannerScreen> {
     setState(() {});
   }
 
-  // 3. Xử lý OCR từng khung hình
   Future<void> _processCameraImage(CameraImage image) async {
     try {
       final inputImage = _inputImageFromCameraImage(image);
@@ -124,14 +122,14 @@ class _ScannerScreenState extends State<ScannerScreen> {
           _detectedBlocks = recognizedText.blocks;
         });
       }
-    } catch (e) {
-      // Bỏ qua lỗi khung hình lẻ
+    } catch (_) {
     } finally {
       _isProcessing = false;
     }
   }
 
   InputImage? _inputImageFromCameraImage(CameraImage image) {
+    if (_cameras.isEmpty) return null;
     final camera = _cameras[0];
     final sensorOrientation = camera.sensorOrientation;
     final format = InputImageFormatValue.fromRawValue(image.format.raw);
@@ -172,10 +170,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
       ),
       body: Stack(
         children: [
-          // Hiển thị Camera
           CameraPreview(_controller!),
-
-          // Lớp vẽ đè bôi vàng AR (CustomPainter)
           CustomPaint(
             size: Size.infinite,
             painter: ARHighlightPainter(
@@ -184,8 +179,6 @@ class _ScannerScreenState extends State<ScannerScreen> {
               previewSize: _controller!.value.previewSize!,
             ),
           ),
-
-          // Thanh thông báo trạng thái phía dưới
           Positioned(
             bottom: 20,
             left: 20,
@@ -193,7 +186,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
             child: Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Colors.black70,
+                color: Colors.black.withOpacity(0.7),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: Text(
@@ -209,7 +202,6 @@ class _ScannerScreenState extends State<ScannerScreen> {
   }
 }
 
-// 4. Lớp vẽ bôi vàng số trúng thưởng
 class ARHighlightPainter extends CustomPainter {
   final List<TextBlock> blocks;
   final List<String> winningNumbers;
@@ -224,7 +216,7 @@ class ARHighlightPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final Paint highlightPaint = Paint()
-      ..color = Colors.yellow.withOpacity(0.55) // Bôi vàng trong suốt
+      ..color = Colors.yellow.withOpacity(0.55)
       ..style = PaintingStyle.fill;
 
     final Paint borderPaint = Paint()
@@ -234,14 +226,12 @@ class ARHighlightPainter extends CustomPainter {
 
     for (var block in blocks) {
       for (var line in block.lines) {
-        String cleanText = line.text.replaceAll(RegExp(r'\D'), ''); // Chỉ lấy chữ số
+        String cleanText = line.text.replaceAll(RegExp(r'\D'), '');
 
         if (cleanText.length >= 2 && cleanText.length <= 6) {
-          // Kiểm tra xem dãy số có nằm trong danh sách trúng thưởng không
           if (winningNumbers.contains(cleanText)) {
             Rect rect = line.boundingBox;
 
-            // Chuyển đổi tọa độ khung hình camera sang tọa độ màn hình
             double scaleX = size.width / previewSize.height;
             double scaleY = size.height / previewSize.width;
 
@@ -252,7 +242,6 @@ class ARHighlightPainter extends CustomPainter {
               rect.bottom * scaleY,
             );
 
-            // Vẽ hiệu ứng bôi vàng + viền đỏ quanh số trúng
             canvas.drawRect(scaledRect, highlightPaint);
             canvas.drawRect(scaledRect, borderPaint);
           }
