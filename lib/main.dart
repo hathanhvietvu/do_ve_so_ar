@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'dartd:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
@@ -40,7 +40,7 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
   List<MatchedResult> _matchedResults = [];
   Map<String, List<String>> _provinceResults = {};
   bool _isProcessing = false;
-  String _statusText = "Đang kết nối lấy KQXS theo từng đài từ MinhChinh.com...";
+  String _statusText = "Đang kết nối lấy KQXS từ MinhChinh.com...";
 
   final ImagePicker _picker = ImagePicker();
   final TextRecognizer _textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
@@ -52,7 +52,6 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
   }
 
   Future<void> _fetchMinhChinhByProvince() async {
-    // Bộ dữ liệu KQXS Miền Nam phân theo từng đài ngày 22/08/2026
     Map<String, List<String>> fallbackData = {
       "TPHCM": ["22", "55", "114", "884", "2424", "3370", "5681", "4809", "3063", "8431", "9970", "3368", "9212", "296215"],
       "LONG AN": ["48", "548", "9548", "7036", "5125", "5124", "4300", "2045", "6434", "9522", "24610", "53708"],
@@ -66,7 +65,6 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
 
       if (response.statusCode == 200) {
         var document = parser.parse(response.body);
-        // Bóc tách bảng KQXS theo tên tỉnh/đài
         var tables = document.querySelectorAll('table');
         for (var table in tables) {
           String tableText = table.text.toUpperCase();
@@ -98,7 +96,7 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
 
     setState(() {
       _provinceResults = fallbackData;
-      _statusText = "Đã cập nhật KQXS phân đài! Hãy chọn ảnh tập vé để dò chuẩn quy tắc.";
+      _statusText = "Sẵn sàng! Hãy chọn ảnh tập vé để dò số.";
     });
   }
 
@@ -113,7 +111,7 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
       _selectedImage = imageFile;
       _imageSize = Size(decodedImage.width.toDouble(), decodedImage.height.toDouble());
       _isProcessing = true;
-      _statusText = "Đang đọc tên đài và lọc dãy số trên vé...";
+      _statusText = "Đang quét và lọc con số trúng...";
     });
 
     try {
@@ -126,8 +124,7 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
       for (var block in recognizedText.blocks) {
         String blockText = block.text.toUpperCase();
         
-        // Nhận diện tên đài xuất hiện trong block chữ
-        String targetProvince = "TPHCM"; // Mặc định nếu thuộc cọc bên trái
+        String targetProvince = "TPHCM";
         if (blockText.contains("LONG AN")) {
           targetProvince = "LONG AN";
         } else if (blockText.contains("BÌNH PHƯỚC")) {
@@ -146,15 +143,27 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
             for (var m in matches) {
               String number = m.group(0)!;
               
-              // Kiểm tra điều kiện trúng số chuẩn
-              String prizeName = _verifyLotteryRules(number, provinceWinningNumbers);
+              // Tính toán vị trí chính xác của chuỗi số khớp
+              MatchMatchInfo? winInfo = _findMatchingSubstringInfo(number, provinceWinningNumbers);
 
-              if (prizeName.isNotEmpty) {
+              if (winInfo != null) {
+                // Tính khoảng chữ nhật tương đối của các con số trúng
+                Rect fullRect = element.boundingBox;
+                double charWidth = fullRect.width / number.length;
+                
+                double matchedLeft = fullRect.left + (winInfo.startIndex * charWidth);
+                double matchedRight = matchedLeft + (winInfo.matchedLength * charWidth);
+
+                Rect exactNumberRect = Rect.fromLTRB(
+                  matchedLeft,
+                  fullRect.top,
+                  matchedRight,
+                  fullRect.bottom,
+                );
+
                 hits.add(MatchedResult(
-                  rect: element.boundingBox,
-                  number: number,
-                  province: targetProvince,
-                  prize: prizeName,
+                  rect: exactNumberRect,
+                  matchedText: winInfo.matchedText,
                 ));
               }
             }
@@ -165,8 +174,8 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
       setState(() {
         _matchedResults = hits;
         _statusText = hits.isNotEmpty
-            ? "XONG! Tìm thấy ${hits.length} vé trúng. Đã khoanh đỏ kèm nhãn giải."
-            : "Không có vé nào trúng đạt điều kiện.";
+            ? "Tìm thấy ${hits.length} vị trí số trúng! Đã tô nền XANH LÁ."
+            : "Không tìm thấy con số trúng phù hợp.";
       });
     } catch (e) {
       setState(() {
@@ -179,36 +188,38 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
     }
   }
 
-  // Thuật toán kiểm tra điều kiện:
-  // 1. Trúng >= 2 số liên tiếp ngoài cùng bên phải (Đuôi)
-  // 2. Trúng >= 3 số liên tiếp ở bất kỳ vị trí nào
-  String _verifyLotteryRules(String scanned, List<String> winningNumbers) {
-    if (scanned.length < 2) return "";
+  MatchMatchInfo? _findMatchingSubstringInfo(String scanned, List<String> winningNumbers) {
+    if (scanned.length < 2) return null;
 
     for (String winNum in winningNumbers) {
-      // ĐIỀU KIỆN 1: Trúng >= 2 số liên tiếp ngoài cùng bên phải (Tận cùng)
+      // 1. Kiểm tra trúng >= 2 số đuôi (ngoài cùng bên phải)
       for (int len = scanned.length; len >= 2; len--) {
         String tail = scanned.substring(scanned.length - len);
         if (winNum.endsWith(tail) || winNum == tail) {
-          if (len == 2) return "Giải 8 / Số Đuôi ($tail)";
-          if (len == 3) return "Trúng 3 số đuôi ($tail)";
-          if (len == 4) return "Trúng 4 số đuôi ($tail)";
-          if (len >= 5) return "Trúng Giải Lớn ($tail)";
+          return MatchMatchInfo(
+            startIndex: scanned.length - len,
+            matchedLength: len,
+            matchedText: tail,
+          );
         }
       }
 
-      // ĐIỀU KIỆN 2: Trúng >= 3 số liên tiếp ở vị trí bất kỳ (đầu/giữa)
+      // 2. Kiểm tra trúng >= 3 số liên tiếp ở đầu hoặc giữa
       if (scanned.length >= 3) {
         for (int i = 0; i <= scanned.length - 3; i++) {
           String sub = scanned.substring(i, i + 3);
           if (winNum.contains(sub)) {
-            return "Khớp 3 số ($sub)";
+            return MatchMatchInfo(
+              startIndex: i,
+              matchedLength: 3,
+              matchedText: sub,
+            );
           }
         }
       }
     }
 
-    return "";
+    return null;
   }
 
   @override
@@ -221,7 +232,7 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Dò Vé Số Chuẩn Đài"),
+        title: const Text("Dò Vé Số Tô Nền Xanh"),
         backgroundColor: Colors.deepOrange,
         foregroundColor: Colors.white,
       ),
@@ -235,7 +246,7 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
                       children: const [
                         Icon(Icons.style_outlined, size: 80, color: Colors.grey),
                         SizedBox(height: 10),
-                        Text("Chọn ảnh tập vé để dò chính xác", style: TextStyle(color: Colors.grey, fontSize: 16)),
+                        Text("Chọn ảnh tập vé số để tô nền xanh con số trúng", style: TextStyle(color: Colors.grey, fontSize: 15)),
                       ],
                     ),
                   )
@@ -247,7 +258,7 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
                         LayoutBuilder(
                           builder: (context, constraints) {
                             return CustomPaint(
-                              painter: StrictRedBorderPainter(
+                              painter: GreenHighlightPainter(
                                 results: _matchedResults,
                                 imageSize: _imageSize!,
                                 containerSize: Size(constraints.maxWidth, constraints.maxHeight),
@@ -273,7 +284,7 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
               children: [
                 Text(
                   _statusText,
-                  style: const TextStyle(color: Colors.yellowAccent, fontSize: 13, fontWeight: FontWeight.bold),
+                  style: const TextStyle(color: Colors.greenAccent, fontSize: 13, fontWeight: FontWeight.bold),
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 10),
@@ -283,7 +294,7 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
                       child: ElevatedButton.icon(
                         onPressed: () => _pickAndProcessImage(ImageSource.gallery),
                         icon: const Icon(Icons.photo_library),
-                        label: const Text("THƯ VIỆN ÁNH"),
+                        label: const Text("THƯ VIỆN ẢNH"),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.blue,
                           foregroundColor: Colors.white,
@@ -313,26 +324,34 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
   }
 }
 
-class MatchedResult {
-  final Rect rect;
-  final String number;
-  final String province;
-  final String prize;
+class MatchMatchInfo {
+  final int startIndex;
+  final int matchedLength;
+  final String matchedText;
 
-  MatchedResult({
-    required this.rect,
-    required this.number,
-    required this.province,
-    required this.prize,
+  MatchMatchInfo({
+    required this.startIndex,
+    required this.matchedLength,
+    required this.matchedText,
   });
 }
 
-class StrictRedBorderPainter extends CustomPainter {
+class MatchedResult {
+  final Rect rect;
+  final String matchedText;
+
+  MatchedResult({
+    required this.rect,
+    required this.matchedText,
+  });
+}
+
+class GreenHighlightPainter extends CustomPainter {
   final List<MatchedResult> results;
   final Size imageSize;
   final Size containerSize;
 
-  StrictRedBorderPainter({
+  GreenHighlightPainter({
     required this.results,
     required this.imageSize,
     required this.containerSize,
@@ -340,11 +359,10 @@ class StrictRedBorderPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Chỉ vẽ khoanh đỏ (Không tô vàng)
-    final Paint borderPaint = Paint()
-      ..color = Colors.red
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3.5;
+    // Chỉ tô màu XANH LÁ xuyên thấu lên nền con số trúng
+    final Paint greenFillPaint = Paint()
+      ..color = Colors.greenAccent.withOpacity(0.75)
+      ..style = PaintingStyle.fill;
 
     double scale = 1.0;
     double offsetX = 0.0;
@@ -370,8 +388,8 @@ class StrictRedBorderPainter extends CustomPainter {
         r.bottom * scale + offsetY,
       );
 
-      // Khoanh đỏ xung quanh số trúng
-      canvas.drawRect(scaledRect, borderPaint);
+      // Vẽ duy nhất dải màu nền Xanh Lá
+      canvas.drawRect(scaledRect, greenFillPaint);
     }
   }
 
