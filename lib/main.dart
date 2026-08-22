@@ -38,9 +38,9 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
   File? _selectedImage;
   Size? _imageSize;
   List<MatchedResult> _matchedResults = [];
-  Map<String, List<String>> _provinceResults = {};
+  Map<String, ProvinceData> _provinceDataMap = {};
   bool _isProcessing = false;
-  String _statusText = "Đang kết nối lấy KQXS từ MinhChinh.com...";
+  String _statusText = "Đang lấy KQXS từ MinhChinh.com...";
 
   final ImagePicker _picker = ImagePicker();
   final TextRecognizer _textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
@@ -48,15 +48,16 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
   @override
   void initState() {
     super.initState();
-    _fetchMinhChinhByProvince();
+    _fetchMinhChinhData();
   }
 
-  Future<void> _fetchMinhChinhByProvince() async {
-    Map<String, List<String>> fallbackData = {
-      "TPHCM": ["22", "55", "114", "884", "2424", "3370", "5681", "4809", "3063", "8431", "9970", "3368", "9212", "296215"],
-      "LONG AN": ["48", "548", "9548", "7036", "5125", "5124", "4300", "2045", "6434", "9522", "24610", "53708"],
-      "BÌNH PHƯỚC": ["15", "315", "7315", "8812", "9012", "4412", "1102", "5512", "88912"],
-      "HẬU GIANG": ["91", "291", "8291", "6612", "7712", "1152", "0012", "9912", "33312"],
+  Future<void> _fetchMinhChinhData() async {
+    // Dữ liệu dự phòng phân tách rõ Giải Đặc Biệt và Các Giải Khác
+    Map<String, ProvinceData> fallbackData = {
+      "TPHCM": ProvinceData(specialPrize: "296215", otherPrizes: ["22", "55", "114", "884", "2424", "3370", "5681", "4809", "3063", "8431", "9970", "3368", "9212"]),
+      "LONG AN": ProvinceData(specialPrize: "53708", otherPrizes: ["48", "548", "9548", "7036", "5125", "5124", "4300", "2045", "6434", "9522", "24610"]),
+      "BÌNH PHƯỚC": ProvinceData(specialPrize: "88912", otherPrizes: ["15", "315", "7315", "8812", "9012", "4412", "1102", "5512"]),
+      "HẬU GIANG": ProvinceData(specialPrize: "33312", otherPrizes: ["91", "291", "8291", "6612", "7712", "1152", "0012", "9912"]),
     };
 
     try {
@@ -86,8 +87,13 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
             for (var m in exp.allMatches(tableText)) {
               nums.add(m.group(0)!);
             }
-            if (nums.isNotEmpty) {
-              fallbackData[detectedProvince] = nums.toSet().toList();
+            if (nums.length >= 2) {
+              String special = nums.firstWhere((element) => element.length == 6, orElse: () => nums.last);
+              nums.remove(special);
+              fallbackData[detectedProvince] = ProvinceData(
+                specialPrize: special,
+                otherPrizes: nums.toSet().toList(),
+              );
             }
           }
         }
@@ -95,8 +101,8 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
     } catch (_) {}
 
     setState(() {
-      _provinceResults = fallbackData;
-      _statusText = "Sẵn sàng! Hãy chọn ảnh tập vé để dò số.";
+      _provinceDataMap = fallbackData;
+      _statusText = "Sẵn sàng! Vui lòng chọn ảnh tập vé số.";
     });
   }
 
@@ -111,7 +117,7 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
       _selectedImage = imageFile;
       _imageSize = Size(decodedImage.width.toDouble(), decodedImage.height.toDouble());
       _isProcessing = true;
-      _statusText = "Đang quét và lọc con số trúng...";
+      _statusText = "Đang phân tích các con số trúng...";
     });
 
     try {
@@ -133,7 +139,8 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
           targetProvince = "HẬU GIANG";
         }
 
-        List<String> provinceWinningNumbers = _provinceResults[targetProvince] ?? [];
+        ProvinceData? pData = _provinceDataMap[targetProvince];
+        if (pData == null) continue;
 
         for (var line in block.lines) {
           for (var element in line.elements) {
@@ -143,11 +150,9 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
             for (var m in matches) {
               String number = m.group(0)!;
               
-              // Tính toán vị trí chính xác của chuỗi số khớp
-              MatchMatchInfo? winInfo = _findMatchingSubstringInfo(number, provinceWinningNumbers);
+              MatchInfo? winInfo = _evaluateMatch(number, pData);
 
               if (winInfo != null) {
-                // Tính khoảng chữ nhật tương đối của các con số trúng
                 Rect fullRect = element.boundingBox;
                 double charWidth = fullRect.width / number.length;
                 
@@ -163,7 +168,7 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
 
                 hits.add(MatchedResult(
                   rect: exactNumberRect,
-                  matchedText: winInfo.matchedText,
+                  isSpecialMatch: winInfo.isSpecialMatch,
                 ));
               }
             }
@@ -174,12 +179,12 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
       setState(() {
         _matchedResults = hits;
         _statusText = hits.isNotEmpty
-            ? "Tìm thấy ${hits.length} vị trí số trúng! Đã tô nền XANH LÁ."
-            : "Không tìm thấy con số trúng phù hợp.";
+            ? "Tìm thấy ${hits.length} chỗ trúng (Đỏ: Trúng Giải ĐB, Xanh: Trúng giải khác)"
+            : "Không phát hiện số trúng.";
       });
     } catch (e) {
       setState(() {
-        _statusText = "Lỗi xử lý hình ảnh. Vui lòng thử lại!";
+        _statusText = "Lỗi đọc hình ảnh. Vui lòng thử lại!";
       });
     } finally {
       setState(() {
@@ -188,31 +193,46 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
     }
   }
 
-  MatchMatchInfo? _findMatchingSubstringInfo(String scanned, List<String> winningNumbers) {
+  MatchInfo? _evaluateMatch(String scanned, ProvinceData data) {
     if (scanned.length < 2) return null;
 
-    for (String winNum in winningNumbers) {
-      // 1. Kiểm tra trúng >= 2 số đuôi (ngoài cùng bên phải)
+    // 1. Ưu tiên kiểm tra với GIẢI ĐẶC BIỆT -> Nếu trùng >= 2 số đuôi liên tiếp thì TÔ ĐỎ
+    for (int len = scanned.length; len >= 2; len--) {
+      String tail = scanned.substring(scanned.length - len);
+      if (data.specialPrize.endsWith(tail)) {
+        return MatchInfo(
+          startIndex: scanned.length - len,
+          matchedLength: len,
+          isSpecialMatch: true, // Trùng giải đặc biệt -> Tô Đỏ
+        );
+      }
+    }
+
+    // 2. Kiểm tra trùng đuôi >= 2 số với CÁC GIẢI KHÁC -> TÔ XANH LÁ
+    for (String winNum in data.otherPrizes) {
       for (int len = scanned.length; len >= 2; len--) {
         String tail = scanned.substring(scanned.length - len);
         if (winNum.endsWith(tail) || winNum == tail) {
-          return MatchMatchInfo(
+          return MatchInfo(
             startIndex: scanned.length - len,
             matchedLength: len,
-            matchedText: tail,
+            isSpecialMatch: false,
           );
         }
       }
+    }
 
-      // 2. Kiểm tra trúng >= 3 số liên tiếp ở đầu hoặc giữa
-      if (scanned.length >= 3) {
+    // 3. Kiểm tra trúng >= 3 số liên tiếp bất kỳ vị trí nào với các giải khác -> TÔ XANH LÁ
+    if (scanned.length >= 3) {
+      List<String> allPrizes = [data.specialPrize, ...data.otherPrizes];
+      for (String winNum in allPrizes) {
         for (int i = 0; i <= scanned.length - 3; i++) {
           String sub = scanned.substring(i, i + 3);
           if (winNum.contains(sub)) {
-            return MatchMatchInfo(
+            return MatchInfo(
               startIndex: i,
               matchedLength: 3,
-              matchedText: sub,
+              isSpecialMatch: false,
             );
           }
         }
@@ -232,7 +252,7 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Dò Vé Số Tô Nền Xanh"),
+        title: const Text("Dò Vé Số"),
         backgroundColor: Colors.deepOrange,
         foregroundColor: Colors.white,
       ),
@@ -246,7 +266,7 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
                       children: const [
                         Icon(Icons.style_outlined, size: 80, color: Colors.grey),
                         SizedBox(height: 10),
-                        Text("Chọn ảnh tập vé số để tô nền xanh con số trúng", style: TextStyle(color: Colors.grey, fontSize: 15)),
+                        Text("Chọn ảnh tập vé để bắt đầu dò số", style: TextStyle(color: Colors.grey, fontSize: 15)),
                       ],
                     ),
                   )
@@ -258,7 +278,7 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
                         LayoutBuilder(
                           builder: (context, constraints) {
                             return CustomPaint(
-                              painter: GreenHighlightPainter(
+                              painter: DualColorPainter(
                                 results: _matchedResults,
                                 imageSize: _imageSize!,
                                 containerSize: Size(constraints.maxWidth, constraints.maxHeight),
@@ -284,7 +304,7 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
               children: [
                 Text(
                   _statusText,
-                  style: const TextStyle(color: Colors.greenAccent, fontSize: 13, fontWeight: FontWeight.bold),
+                  style: const TextStyle(color: Colors.yellowAccent, fontSize: 13, fontWeight: FontWeight.bold),
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 10),
@@ -324,34 +344,41 @@ class _LotteryScannerScreenState extends State<LotteryScannerScreen> {
   }
 }
 
-class MatchMatchInfo {
+class ProvinceData {
+  final String specialPrize;
+  final List<String> otherPrizes;
+
+  ProvinceData({required this.specialPrize, required this.otherPrizes});
+}
+
+class MatchInfo {
   final int startIndex;
   final int matchedLength;
-  final String matchedText;
+  final bool isSpecialMatch;
 
-  MatchMatchInfo({
+  MatchInfo({
     required this.startIndex,
     required this.matchedLength,
-    required this.matchedText,
+    required this.isSpecialMatch,
   });
 }
 
 class MatchedResult {
   final Rect rect;
-  final String matchedText;
+  final bool isSpecialMatch;
 
   MatchedResult({
     required this.rect,
-    required this.matchedText,
+    required this.isSpecialMatch,
   });
 }
 
-class GreenHighlightPainter extends CustomPainter {
+class DualColorPainter extends CustomPainter {
   final List<MatchedResult> results;
   final Size imageSize;
   final Size containerSize;
 
-  GreenHighlightPainter({
+  DualColorPainter({
     required this.results,
     required this.imageSize,
     required this.containerSize,
@@ -359,8 +386,13 @@ class GreenHighlightPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Chỉ tô màu XANH LÁ xuyên thấu lên nền con số trúng
-    final Paint greenFillPaint = Paint()
+    // Nền Đỏ cho Giải Đặc Biệt
+    final Paint redPaint = Paint()
+      ..color = Colors.redAccent.withOpacity(0.8)
+      ..style = PaintingStyle.fill;
+
+    // Nền Xanh Lá cho các giải khác
+    final Paint greenPaint = Paint()
       ..color = Colors.greenAccent.withOpacity(0.75)
       ..style = PaintingStyle.fill;
 
@@ -388,8 +420,8 @@ class GreenHighlightPainter extends CustomPainter {
         r.bottom * scale + offsetY,
       );
 
-      // Vẽ duy nhất dải màu nền Xanh Lá
-      canvas.drawRect(scaledRect, greenFillPaint);
+      // Chọn cọ vẽ theo loại giải trúng
+      canvas.drawRect(scaledRect, item.isSpecialMatch ? redPaint : greenPaint);
     }
   }
 
