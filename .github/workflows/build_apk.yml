@@ -20,13 +20,15 @@ jobs:
       - name: Set up Flutter SDK
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.19.x'
+          flutter-version: '3.19.6'
           channel: 'stable'
 
-      - name: Create Flutter Project Structure
+      - name: Create Android Native Folder
         run: |
-          flutter create . --org com.example --platforms android
-          rm -f lib/main.dart
+          mkdir -p temp_lib
+          cp lib/main.dart temp_lib/main.dart
+          flutter create . --org com.example.doveso --platforms android
+          cp temp_lib/main.dart lib/main.dart
 
       - name: Install Dependencies
         run: flutter pub get
